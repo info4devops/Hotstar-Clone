@@ -1,8 +1,9 @@
+# IAM Policy Document for EKS Cluster Role
 data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
 
-    principals {
+    principal {
       type        = "Service"
       identifiers = ["eks.amazonaws.com"]
     }
@@ -11,44 +12,58 @@ data "aws_iam_policy_document" "assume_role" {
   }
 }
 
-resource "aws_iam_role" "example" {
+# IAM Role for EKS Cluster
+resource "aws_iam_role" "eks_cluster_role" {
   name               = "eks-cluster-cloud"
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
 
+# Attach Required IAM Policies to EKS Cluster Role
 resource "aws_iam_role_policy_attachment" "example-AmazonEKSClusterPolicy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-  role       = aws_iam_role.example.name
+  role       = aws_iam_role.eks_cluster_role.name
 }
 
-#get vpc data
+# Fetch Default VPC
 data "aws_vpc" "default" {
   default = true
 }
-#get public subnets for cluster
+
+# Fetch Public Subnets in at Least Two AZs
 data "aws_subnets" "public" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
 }
-#cluster provision
+
+# Fetch Availability Zones of the Subnets
+data "aws_subnet" "selected" {
+  for_each = toset(data.aws_subnets.public.ids)
+  id       = each.value
+}
+
+# Create a List of Subnet IDs in at Least Two Different AZs
+locals {
+  unique_az_subnets = distinct([for s in data.aws_subnet.selected : s.id if length(s.availability_zone) > 1])
+}
+
+# EKS Cluster Provisioning
 resource "aws_eks_cluster" "example" {
   name     = "EKS_CLOUD"
-  role_arn = aws_iam_role.example.arn
+  role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    subnet_ids = data.aws_subnets.public.ids
+    subnet_ids = local.unique_az_subnets
   }
 
-  # Ensure that IAM Role permissions are created before and deleted after EKS Cluster handling.
-  # Otherwise, EKS will not be able to properly delete EKS managed EC2 infrastructure such as Security Groups.
   depends_on = [
     aws_iam_role_policy_attachment.example-AmazonEKSClusterPolicy,
   ]
 }
 
-resource "aws_iam_role" "example1" {
+# IAM Role for EKS Node Group
+resource "aws_iam_role" "eks_node_role" {
   name = "eks-node-group-cloud"
 
   assume_role_policy = jsonencode({
@@ -63,37 +78,36 @@ resource "aws_iam_role" "example1" {
   })
 }
 
+# Attach Required IAM Policies for Node Group
 resource "aws_iam_role_policy_attachment" "example-AmazonEKSWorkerNodePolicy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.example1.name
+  role       = aws_iam_role.eks_node_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "example-AmazonEKS_CNI_Policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.example1.name
+  role       = aws_iam_role.eks_node_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "example-AmazonEC2ContainerRegistryReadOnly" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-  role       = aws_iam_role.example1.name
+  role       = aws_iam_role.eks_node_role.name
 }
 
-#create node group
+# Create EKS Node Group
 resource "aws_eks_node_group" "example" {
   cluster_name    = aws_eks_cluster.example.name
   node_group_name = "Node-cloud"
-  node_role_arn   = aws_iam_role.example1.arn
-  subnet_ids      = data.aws_subnets.public.ids
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = local.unique_az_subnets
 
   scaling_config {
     desired_size = 1
     max_size     = 2
     min_size     = 1
   }
-  instance_types = ["t2.medium"]
+  instance_types = ["t3.medium"]
 
-  # Ensure that IAM Role permissions are created before and deleted after EKS Node Group handling.
-  # Otherwise, EKS will not be able to properly delete EC2 Instances and Elastic Network Interfaces.
   depends_on = [
     aws_iam_role_policy_attachment.example-AmazonEKSWorkerNodePolicy,
     aws_iam_role_policy_attachment.example-AmazonEKS_CNI_Policy,
