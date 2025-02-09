@@ -3,7 +3,7 @@ data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
 
-    principal {
+    principals  {
       type        = "Service"
       identifiers = ["eks.amazonaws.com"]
     }
